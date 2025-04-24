@@ -1,5 +1,5 @@
 import streamlit as st
-import boto3
+# import boto3
 from PIL import Image, ImageEnhance, ImageFilter
 import os
 import re
@@ -10,6 +10,9 @@ import io
 import logging
 from snowflake.snowpark import Session
 import gzip
+import requests
+
+FLASK_API_URL = 'https://textract-rz69.onrender.com'
 
 def load_secrets_from_stage(session, stage_name, file_name):
     file = session.file.get(stage_name + "/" + file_name, "./")[0]
@@ -29,14 +32,28 @@ def create_snowflake_session():
     session = Session.builder.configs(connection_parameters).create()
     return session
 
-def connect_textract(aws_access_key_id,aws_secret_access_key,aws_region):
-    textract_client = boto3.client(
-        'textract',
-        aws_access_key_id=aws_access_key_id,
-        aws_secret_access_key=aws_secret_access_key,
-        aws_region=aws_region
-    )
-    return textract_client
+def extract_text_from_flask(image):
+
+    image_bytes = io.BytesIO(image)
+    image_bytes.seek(0)
+
+    response = requests.post(FLASK_API_URL, files={'file': image_bytes})
+
+    if response.status_code == 200:
+        extracted_text = response.json().get('text')
+        return extracted_text
+    else:
+        st.error("Error extracting text.")
+        return None
+
+# def connect_textract(aws_access_key_id,aws_secret_access_key,aws_region):
+#     textract_client = boto3.client(
+#         'textract',
+#         aws_access_key_id=aws_access_key_id,
+#         aws_secret_access_key=aws_secret_access_key,
+#         aws_region=aws_region
+#     )
+#     return textract_client
 
 def connect_snowflake(user,password,account,warehouse,database,schema):
     conn = snowflake.connector.connect(
@@ -50,33 +67,33 @@ def connect_snowflake(user,password,account,warehouse,database,schema):
     cursor = conn.cursor()
     return conn, cursor
 
-def process_image(uploaded_file):
+# def process_image(uploaded_file):
     
-    image = Image.open(uploaded_file).convert("RGB")
-    image = image.filter(ImageFilter.SHARPEN)
-    image = ImageEnhance.Contrast(image).enhance(2)
-    st.image(image, caption="Uploaded Image", use_container_width=True)
+#     image = Image.open(uploaded_file).convert("RGB")
+#     image = image.filter(ImageFilter.SHARPEN)
+#     image = ImageEnhance.Contrast(image).enhance(2)
+#     st.image(image, caption="Uploaded Image", use_container_width=True)
 
-    return image
+#     return image
 
-def extract_text(image,aws_access_key_id,aws_secret_access_key,aws_region):    
+# def extract_text(image,aws_access_key_id,aws_secret_access_key,aws_region):    
 
-    image_bytes = io.BytesIO()
-    image.save(image_bytes, format="JPEG")
-    image_bytes.seek(0)
+#     image_bytes = io.BytesIO()
+#     image.save(image_bytes, format="JPEG")
+#     image_bytes.seek(0)
 
-    textract_client = connect_textract(aws_access_key_id,aws_secret_access_key,aws_region)
-    response = textract_client.detect_document_text(Document={'Bytes': image_bytes.read()})
+#     textract_client = connect_textract(aws_access_key_id,aws_secret_access_key,aws_region)
+#     response = textract_client.detect_document_text(Document={'Bytes': image_bytes.read()})
 
-    extracted_text = ""
-    for item in response['Blocks']:
-        if item['BlockType'] == 'LINE':
-            extracted_text += item['Text'] + "\n"
+#     extracted_text = ""
+#     for item in response['Blocks']:
+#         if item['BlockType'] == 'LINE':
+#             extracted_text += item['Text'] + "\n"
 
-    # st.write("Extracted Text:")
-    # st.text(extracted_text)
+#     st.write("Extracted Text:")
+#     st.text(extracted_text)
 
-    return extracted_text
+#     return extracted_text
 
 def check_warranty_validity(extracted_text,cursor):
     warranty_id = None
@@ -149,9 +166,14 @@ def main():
     uploaded_file = st.file_uploader("Upload Invoice Image (to extract Warranty ID)", type=["png", "jpg", "jpeg"])    
 
     if uploaded_file is not None:
-        image = process_image(uploaded_file)
+        # image = process_image(uploaded_file)
+        image = uploaded_file.read()
+        st.image(image, caption="Uploaded Image", use_container_width=True)
+
         with st.spinner("🔍 Extracting text..."):
-            extracted_text = extract_text(image,aws_access_key_id,aws_secret_access_key,aws_region)
+            # extracted_text = extract_text(image,aws_access_key_id,aws_secret_access_key,aws_region)
+            extracted_text = extract_text_from_flask(image)
+
         conn, cursor = connect_snowflake(user,password,account,warehouse,database,schema)
         try:
             warranty_id = check_warranty_validity(extracted_text,cursor)
