@@ -1,0 +1,7 @@
+streamlit
+boto3
+pillow
+python-dotenv
+snowflake-connector-python
+snowflake-snowpark-python
+pandas
