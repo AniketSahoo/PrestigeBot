@@ -6,6 +6,8 @@ import re
 from dotenv import load_dotenv
 import snowflake.connector
 import pandas as pd
+import io
+import logging
 
 load_dotenv()
 
@@ -15,7 +17,6 @@ aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
 aws_region = os.getenv("AWS_DEFAULT_REGION")
 
 # Snowflake Credentials
-
 user=os.getenv("SNOWFLAKE_USER")
 password=os.getenv("SNOWFLAKE_PASSWORD")
 account=os.getenv("SNOWFLAKE_ACCOUNT")
@@ -42,7 +43,7 @@ def connect_snowflake(user,password,account,warehouse,database,schema):
         schema=schema
     )
     cursor = conn.cursor()
-    return cursor
+    return conn, cursor
 
 def process_image(uploaded_file):
     
@@ -53,18 +54,14 @@ def process_image(uploaded_file):
 
     return image
 
-
 def extract_text(image):    
 
-    temp_image_path = "temp_image.jpg"
-    image.save(temp_image_path)
+    image_bytes = io.BytesIO()
+    image.save(image_bytes, format="JPEG")
+    image_bytes.seek(0)
 
     textract_client = connect_textract(aws_access_key_id,aws_secret_access_key,aws_region)
-
-    with open(temp_image_path, 'rb') as img_file:
-        response = textract_client.detect_document_text(Document={'Bytes': img_file.read()})
-
-    os.remove(temp_image_path)
+    response = textract_client.detect_document_text(Document={'Bytes': image_bytes.read()})
 
     extracted_text = ""
     for item in response['Blocks']:
@@ -76,17 +73,16 @@ def extract_text(image):
 
     return extracted_text
 
-def check_warranty_validity(extracted_text):
-    cursor = connect_snowflake(user,password,account,warehouse,database,schema)
+def check_warranty_validity(extracted_text,cursor):
+    warranty_id = None
     warranty_match = re.search(r"\b\d{6}\b", extracted_text)
     if warranty_match:
         warranty_id = warranty_match.group()
         st.success(f"🔍 Detected Warranty ID: {warranty_id}")
 
-        # Query Snowflake for warranty validity
-        cursor.execute(f"SELECT * FROM WARRANTY WHERE ID = '{warranty_id}'")
+        cursor.execute("SELECT * FROM WARRANTY WHERE ID = %s", (warranty_id,))
         result = cursor.fetchone()
-        columns = [desc[0] for desc in cursor.description]  # Get column names
+        columns = [desc[0] for desc in cursor.description]
 
         if result:
             df = pd.DataFrame([result], columns=columns)
@@ -97,18 +93,19 @@ def check_warranty_validity(extracted_text):
 
     else:
         st.warning("⚠️ Couldn't find a valid 6-digit warranty ID in the image.")
+    return warranty_id
 
-def check_product_validity(extracted_text):
-    cursor = connect_snowflake(user,password,account,warehouse,database,schema)
-    model_match = re.search(r"Model\s*:\s*(.+)", extracted_text)
+def check_product_validity(extracted_text,cursor):
+    model = None
+    model_match = re.search(r"model\s*[:\-]?\s*(\S.+)", extracted_text, re.IGNORECASE)
     model = model_match.group(1).strip() if model_match else None
 
     if model:
         st.success(f"🛠️ Detected Model: {model}")
 
-        cursor.execute(f"SELECT * FROM PRODUCT WHERE NAME ILIKE '{model}'")
+        cursor.execute("SELECT * FROM PRODUCT WHERE NAME ILIKE %s", (model,))
         result = cursor.fetchone()
-        columns = [desc[0] for desc in cursor.description]  # Get column names
+        columns = [desc[0] for desc in cursor.description]  
 
         if result:
             df = pd.DataFrame([result], columns=columns)
@@ -118,6 +115,7 @@ def check_product_validity(extracted_text):
             st.error("❌ Invalid Product.")
     else:
         st.warning("⚠️ Couldn't find Product in the text.")
+    return model
 
 def main():
 
@@ -127,12 +125,18 @@ def main():
 
     if uploaded_file is not None:
         image = process_image(uploaded_file)
-        extracted_text = extract_text(image)
-        check_warranty_validity(extracted_text)
-        check_product_validity(extracted_text)
+        with st.spinner("🔍 Extracting text..."):
+            extracted_text = extract_text(image)
+        conn, cursor = connect_snowflake(user,password,account,warehouse,database,schema)
+        try:
+            warranty_id = check_warranty_validity(extracted_text,cursor)
+            model = check_product_validity(extracted_text,cursor)
+        finally:
+            cursor.close()
+            conn.close()
     else:
         # st.info("Please upload you Warranty card.")
-        print("Waiting on Upload.")
+        logging.info("Waiting on Upload.")
 
 if __name__ == "__main__":
     main()
